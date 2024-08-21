@@ -1,0 +1,52 @@
+---
+- name: NSXアップグレード
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+
+  # vars_files:
+  #   - ../../vars/common.yml
+  #   - ../../vars/upgrade.yml
+
+  tasks:
+    - name: 変数設定確認(変数:restart)
+      fail: msg="変数 restart の値が正しくありません。y/n で入力してください"
+      when: 
+        - restart != 'y'
+        - restart != 'n'
+      run_once: true
+
+    - name: 変数設定確認(変数:edge_cluster_name)
+      fail: msg="変数 edge_cluster_name の値が空です。"
+      when: edge_cluster_name is not defined
+      run_once: true
+
+    - name: アップグレード前のNSXのバージョン確認
+      vmware.ansible_for_nsxt.nsxt_rest:
+        hostname: "{{ nsx['fqdn'] }}"
+        username: "{{ nsx['user'] }}"
+        password: "{{ nsx['password'] }}"
+        validate_certs: false
+        method: get
+        path: /api/v1/node/version
+      register: manager_facts_before
+    - name: アップグレード前のNSXのバージョン表示
+      ansible.builtin.debug:
+        msg: "{{ manager_facts_before.body }}"
+
+    - name: ターゲットバージョンの表示
+      ansible.builtin.debug:
+        msg: "{{ ((upgrade_bundle_file_path.split('-'))[4]).split('.mub')[0] }}"
+
+    - name: NSXアップグレードブロック開始
+      when: manager_facts_before.body.product_version != ((upgrade_bundle_file_path.split('-'))[4]).split('.mub')[0]
+      block:
+        - name: NSXアップグレード処理
+          ansible.builtin.include_tasks:
+            file: upgrade_nsx_with_api.yml
+
+        - name: メディアのバックアップ
+          ansible.builtin.include_tasks:
+            file: ../backup_media/backup_media.yml
+          vars:
+            media_file_path: "{{ upgrade_bundle_file_path }}"

@@ -1,0 +1,7 @@
+---
+collections:
+  - name: https://github.com/vmware/ansible-for-nsxt
+    type: git
+    version: master
+  - name: community.vmware
+  - name: ansible.posix

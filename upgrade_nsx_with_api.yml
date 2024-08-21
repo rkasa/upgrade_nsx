@@ -1,0 +1,217 @@
+---
+- block:
+
+  - name: アップグレードバンドルをNSXへアップロード
+    ansible.builtin.shell:
+      cmd: curl -ik -u {{ nsx['user'] }}:{{ nsx['password'] }} -F file=@{{ upgrade_bundle_file_path }} https://{{ nsx['fqdn'] }}/api/v1/upgrade/bundles?action=upload
+    register: upload
+  - name: アップロード結果の表示
+    ansible.builtin.debug:
+      msg: "{{ upload.stdout_lines }}"
+
+  - name: bundle_idを変数設定
+    ansible.builtin.set_fact:
+      bundle_id: "{{ ((upload.stdout_lines[-2]).split('\"'))[3] }}"
+  - name: bundle id表示
+    ansible.builtin.debug:
+      msg: "{{ bundle_id }}"
+
+  - name: アップグレードバンドルのステータス確認
+    vmware.ansible_for_nsxt.nsxt_upgrade_upload_mub_facts:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      bundle_id: "{{ bundle_id }}"
+      validate_certs: false
+    retries: 60
+    delay: 60
+    until:
+      - upload_nub_facts.status == "SUCCESS"
+      - upload_nub_facts.detailed_status == "Upgrade Bundle retrieved successfully"
+    register: upload_nub_facts
+  - name: アップグレードバンドルのステータス表示
+    ansible.builtin.debug:
+      msg: "{{ upload_nub_facts }}"
+
+  - name: エンドユーザー同意書の同意状況確認
+    vmware.ansible_for_nsxt.nsxt_upgrade_eula_accept_facts:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+      required_info: acceptance
+    register: eula_accept_facts
+  - name: エンドユーザー同意書の同意状況表示
+    ansible.builtin.debug:
+      msg: "{{ eula_accept_facts }}"
+
+  - name: エンドユーザー同意書の同意
+    vmware.ansible_for_nsxt.nsxt_upgrade_eula_accept:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+    when: eula_accept_facts.acceptance == false
+
+  - name: アップグレードコーディネーターのアップグレード
+    vmware.ansible_for_nsxt.nsxt_upgrade_uc:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+    register: upgrade_uc
+  - name: アップグレードコーディネーターのアップグレード指示結果表示
+    ansible.builtin.debug:
+      msg: "{{ upgrade_uc }}"
+
+  - name: アップグレードコーディネーターのアップグレード状況確認
+    vmware.ansible_for_nsxt.nsxt_upgrade_uc_facts:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+    register: upgrade_uc_status
+    failed_when:
+      - "upgrade_uc_status.state != 'SUCCESS'"
+      - "upgrade_uc_status.progress_messages != 'Upgrade-coordinator has been upgraded'"
+  - name: アップグレードコーディネーターのアップグレード結果表示
+    ansible.builtin.debug:
+      msg: "{{ upgrade_uc_status }}"
+
+  - name: プリチェック
+    vmware.ansible_for_nsxt.nsxt_upgrade_prechecks:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+      state: 'present'
+    register: res_precheck
+  - name: プリチェック結果表示
+    ansible.builtin.debug:
+      msg: "{{ res_precheck }}"
+
+  - name: Edgeアップグレードプラン設定
+    vmware.ansible_for_nsxt.nsxt_upgrade_plan:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: False
+      component_type: "edge"
+      parallel: False
+      pause_after_each_group: True
+      pause_on_error: True
+      state: "present"
+    register: edge_plan_setting
+  - name: Edgeアップグレードプラン設定表示
+    ansible.builtin.debug:
+      msg: "{{ edge_plan_setting }}"
+
+  when: restart == "n"
+
+- name: Edgeアップグレード
+  ansible.builtin.include_tasks:
+    file: edge_upgrade.yml
+
+- block:
+  - name: ホストアップグレード開始
+    vmware.ansible_for_nsxt.nsxt_upgrade_run:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+      paused_upgrade: true
+    when: upgrade_status.component_status[1].status == "NOT_STARTED"
+    register: upgrade_host
+  - name: ホストアップグレード開始結果の表示
+    ansible.builtin.debug:
+      msg: "{{ upgrade_host }}"
+
+  - name: ホストアップグレード結果確認
+    vmware.ansible_for_nsxt.nsxt_upgrade_status_summary_facts:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+    register: upgrade_status
+    failed_when: upgrade_status.component_status[1].status != 'SUCCESS'
+  - name: ホストアップグレード結果確認の表示
+    ansible.builtin.debug:
+      msg: "{{ upgrade_status.component_status[1] }}"
+
+  - name: ホストアップグレード後チェック
+    vmware.ansible_for_nsxt.nsxt_upgrade_postchecks:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+      component_type: 'host'
+    when: upgrade_status.component_status[1].status == 'SUCCESS'
+    register: postcheck_host
+  - name: ホストアップグレード後チェックの結果表示
+    ansible.builtin.debug:
+      msg: "{{ (postcheck_host.message.split(':'))[0] }}"
+
+  - name: マネージメントプレーンのアップグレード開始
+    vmware.ansible_for_nsxt.nsxt_upgrade_run:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+      paused_upgrade: true
+    when: upgrade_status.component_status[2].status == "NOT_STARTED"
+    register: upgrade_mp
+  - name: マネージメントプレーンのアップグレード開始結果の表示
+    ansible.builtin.debug:
+      msg: "{{ upgrade_mp }}"
+
+  - name: マネージメントプレーンのアップグレード結果確認
+    vmware.ansible_for_nsxt.nsxt_upgrade_status_summary_facts:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+    register: upgrade_status
+    failed_when: upgrade_status.component_status[2].status != 'SUCCESS'
+  - name: マネージメントプレーンのアップグレード結果表示
+    ansible.builtin.debug:
+      msg: "{{ upgrade_status.component_status[2] }}"
+
+  - name: マネージメントプレーンのアップグレード後チェック
+    vmware.ansible_for_nsxt.nsxt_upgrade_postchecks:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+      component_type: 'mp'
+    when: upgrade_status.component_status[2].status == 'SUCCESS'
+    register: postcheck_management_plane
+  - name: マネージメントプレーンのアップグレード後チェックの結果表示
+    ansible.builtin.debug:
+      msg: "{{ (postcheck_management_plane.message.split(':'))[0] }}"
+
+  - name: アップグレード後のバージョン取得
+    vmware.ansible_for_nsxt.nsxt_rest:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+      method: get
+      path: /api/v1/node/version
+    register: manager_facts
+    failed_when: manager_facts.body.product_version != ((upgrade_bundle_file_path.split('-'))[4]).split('.mub')[0]
+  - name: アップグレード後のバージョン表示
+    ansible.builtin.debug:
+      msg: "{{ manager_facts.body }}"
+
+  - name: アップグレードステータス確認
+    vmware.ansible_for_nsxt.nsxt_upgrade_status_summary_facts:
+      hostname: "{{ nsx['fqdn'] }}"
+      username: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      validate_certs: false
+    register: upgrade_status
+  - name: アップグレードステータスの表示
+    ansible.builtin.debug:
+      msg: "{{ upgrade_status.overall_upgrade_status }}"
+
+  when: upgrade_status.component_status[0].status == 'SUCCESS'

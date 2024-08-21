@@ -1,0 +1,81 @@
+---
+- name: アップグレード状況の取得（事前）
+  vmware.ansible_for_nsxt.nsxt_upgrade_status_summary_facts:
+    hostname: "{{ nsx['fqdn'] }}"
+    username: "{{ nsx['user'] }}"
+    password: "{{ nsx['password'] }}"
+    validate_certs: false
+  register: upgrade_status
+- name: アップグレード状況の表示（事前）
+  ansible.builtin.debug:
+    msg: "{{ upgrade_status }}"
+    
+- name: Edgeグループ設定取得
+  vmware.ansible_for_nsxt.nsxt_rest:
+    hostname: "{{ nsx['fqdn'] }}"
+    username: "{{ nsx['user'] }}"
+    password: "{{ nsx['password'] }}"
+    validate_certs: false
+    method: get
+    path: /api/v1/upgrade/upgrade-unit-groups?component_type=EDGE
+  register: edge_group_facts
+- debug: var=edge_group_facts
+
+- name: APIレスポンスを変数へ格納
+  set_fact:
+    api_data: "{{ edge_group_facts.body.results }}"
+- debug: var=api_data
+
+- name: Edgeグループの設定変更
+  ansible.builtin.include_tasks:
+    file: edge_group_modify.yml
+  with_items: "{{ api_data }}"
+
+- name: Edgeアップグレード開始
+  vmware.ansible_for_nsxt.nsxt_upgrade_run:
+    hostname: "{{ nsx['fqdn'] }}"
+    username: "{{ nsx['user'] }}"
+    password: "{{ nsx['password'] }}"
+    validate_certs: false
+    paused_upgrade: true
+  when: upgrade_status.overall_upgrade_status == "NOT_STARTED" or upgrade_status.overall_upgrade_status == "PAUSED"
+  register: upgrade_edge
+- name: Edgeアップグレード開始結果の表示
+  ansible.builtin.debug:
+    msg: "{{ upgrade_edge }}"
+
+- name: Edgeアップグレード結果確認
+  vmware.ansible_for_nsxt.nsxt_upgrade_status_summary_facts:
+    hostname: "{{ nsx['fqdn'] }}"
+    username: "{{ nsx['user'] }}"
+    password: "{{ nsx['password'] }}"
+    validate_certs: false
+  register: upgrade_status
+  failed_when: 
+    - upgrade_status.component_status[0].status != 'SUCCESS'
+    - upgrade_status.component_status[0].status != 'PAUSED'
+- name: Edgeアップグレード結果表示
+  ansible.builtin.debug:
+    msg: "{{ upgrade_status }}"
+
+- name: Edgeアップグレード後チェック
+  vmware.ansible_for_nsxt.nsxt_upgrade_postchecks:
+    hostname: "{{ nsx['fqdn'] }}"
+    username: "{{ nsx['user'] }}"
+    password: "{{ nsx['password'] }}"
+    validate_certs: false
+    component_type: 'edge'
+  when: upgrade_status.component_status[0].status == 'SUCCESS' or upgrade_status.component_status[0].status == 'PAUSED'
+  register: postcheck_edge
+- name: Edgeアップグレード後チェック結果の表示
+  ansible.builtin.debug:
+    msg: "{{ (postcheck_edge.message.split(':'))[0] }}"
+
+- name: 後続Edgeクラスタアップグレード実施判断
+  pause: prompt="次のEdgeクラスタのアップグレードに進みますか？ (y/n)"
+  register: yn
+
+- name: abort
+  fail: msg="Aborted!!"
+  when: yn.user_input != 'y'
+  run_once: true

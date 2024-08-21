@@ -1,0 +1,55 @@
+---
+- debug: var=item.display_name
+- debug: var=edge_cluster_name
+
+- block:
+  - name: Modify part of the API response
+    set_fact:
+      modified_api_data: "{{ item | combine({'enabled': true}) }}"
+  - debug: var=modified_api_data
+
+  - name: EdgeクラスタのID取得
+    set_fact:
+      edge_cluster_id: "{{ item.id }}"
+  - debug: var=edge_cluster_id
+
+  - name: Edgeグループ設定変更 - 有効化 -
+    ansible.builtin.uri:
+      url: "https://{{ nsx['fqdn'] }}/api/v1/upgrade/upgrade-unit-groups/{{ edge_cluster_id }}"
+      user: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      method: PUT
+      body: "{{modified_api_data}}"
+      force_basic_auth: true
+      body_format: json
+      validate_certs: false
+    register: edeg_group_post
+  - debug: var=edeg_group_post
+
+  when: item.display_name == edge_cluster_name and item.enabled == false
+
+- block:
+  - name: Modify part of the API response
+    set_fact:
+      modified_api_data: "{{ item | combine({'enabled': false}) }}"
+  - debug: var=modified_api_data
+
+  - name: EdgeクラスタのID取得
+    set_fact:
+      edge_cluster_id: "{{ item.id }}"
+  - debug: var=edge_cluster_id
+
+  - name: Edgeグループ設定変更 - 無効化 -
+    ansible.builtin.uri:
+      url: "https://{{ nsx['fqdn'] }}/api/v1/upgrade/upgrade-unit-groups/{{ edge_cluster_id }}"
+      user: "{{ nsx['user'] }}"
+      password: "{{ nsx['password'] }}"
+      method: PUT
+      body: "{{modified_api_data}}"
+      force_basic_auth: true
+      body_format: json
+      validate_certs: false
+    register: edeg_group_post
+  - debug: var=edeg_group_post
+
+  when: item.display_name != edge_cluster_name and item.enabled == true
